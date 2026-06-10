@@ -11,19 +11,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     $request_id = $_POST['request_id'];
     $new_status = $_POST['status'];
     
-    // Only allow customer to cancel their own pending/accepted requests
-    $allowed_statuses = ['cancelled'];
+    // Allow customers to cancel or mark as success (only for their own requests)
+    $allowed_statuses = ['cancelled', 'success'];
     
     if (in_array($new_status, $allowed_statuses)) {
-        $stmt = $pdo->prepare("
-            UPDATE service_requests 
-            SET status = ?, updated_at = NOW() 
-            WHERE id = ? AND customer_id = ? 
-            AND status IN ('pending', 'accepted')
-        ");
+        // Different conditions for different statuses
+        if ($new_status == 'cancelled') {
+            // Can only cancel pending or accepted requests
+            $stmt = $pdo->prepare("
+                UPDATE service_requests 
+                SET status = ?, updated_at = NOW() 
+                WHERE id = ? AND customer_id = ? 
+                AND status IN ('pending', 'accepted')
+            ");
+        } elseif ($new_status == 'success') {
+            // Can only mark as success if status is completed
+            $stmt = $pdo->prepare("
+                UPDATE service_requests 
+                SET status = ?, updated_at = NOW() 
+                WHERE id = ? AND customer_id = ? 
+                AND status = 'completed'
+            ");
+        }
         
         if ($stmt->execute([$new_status, $request_id, $_SESSION['user_id']])) {
-            $_SESSION['success'] = "Service request has been cancelled successfully.";
+            $message = ($new_status == 'cancelled') ? "Service request has been cancelled successfully." : "Service request has been marked as successful!";
+            $_SESSION['success'] = $message;
         } else {
             $_SESSION['error'] = "Failed to update status. Please try again.";
         }
@@ -53,12 +66,18 @@ $status_badges = [
     'accepted' => 'bg-blue-100 text-blue-800',
     'in_progress' => 'bg-purple-100 text-purple-800',
     'completed' => 'bg-green-100 text-green-800',
+    'success' => 'bg-emerald-100 text-emerald-800',
     'cancelled' => 'bg-red-100 text-red-800'
 ];
 
-// Status update options for customers (only cancellation)
-$customer_status_options = [
-    'cancelled' => 'Cancel Request'
+// Status icons for better visual representation
+$status_icons = [
+    'pending' => 'fa-clock',
+    'accepted' => 'fa-check-circle',
+    'in_progress' => 'fa-spinner',
+    'completed' => 'fa-check-double',
+    'success' => 'fa-trophy',
+    'cancelled' => 'fa-ban'
 ];
 ?>
 
@@ -71,6 +90,19 @@ $customer_status_options = [
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        .status-transition {
+            transition: all 0.3s ease;
+        }
+        .success-animation {
+            animation: pulse 0.5s ease-in-out;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+    </style>
 </head>
 <body class="bg-gray-50 font-sans">
 
@@ -96,11 +128,12 @@ $customer_status_options = [
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
     <div class="mb-8">
         <h1 class="text-3xl font-bold text-gray-900">My Service Requests</h1>
-        <p class="text-gray-600 mt-2">Track all your service requests here</p>
+        <p class="text-gray-600 mt-2">Track and manage all your service requests here</p>
     </div>
 
     <?php if (isset($_SESSION['success'])): ?>
-        <div class="mb-4 bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative">
+        <div class="mb-4 bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative success-animation">
+            <i class="fas fa-check-circle mr-2"></i>
             <?php 
             echo $_SESSION['success'];
             unset($_SESSION['success']);
@@ -110,6 +143,7 @@ $customer_status_options = [
 
     <?php if (isset($_SESSION['error'])): ?>
         <div class="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+            <i class="fas fa-exclamation-circle mr-2"></i>
             <?php 
             echo $_SESSION['error'];
             unset($_SESSION['error']);
@@ -144,11 +178,12 @@ $customer_status_options = [
                         </div>
                         <div class="flex items-center gap-2">
                             <span class="px-3 py-1 rounded-full text-sm font-semibold <?php echo $status_badges[$request['status']]; ?>">
+                                <i class="fas <?php echo $status_icons[$request['status']]; ?> mr-1"></i>
                                 <?php echo ucfirst($request['status']); ?>
                             </span>
                             
-                            <!-- Status Update Dropdown (Only for pending/accepted requests) -->
-                            <?php if (in_array($request['status'], ['pending', 'accepted'])): ?>
+                            <!-- Status Update Dropdown -->
+                            <?php if (in_array($request['status'], ['pending', 'accepted', 'completed'])): ?>
                                 <div class="relative" x-data="{ open: false }" @click.away="open = false">
                                     <button @click="open = !open" 
                                             class="ml-2 text-gray-500 hover:text-gray-700 focus:outline-none">
@@ -156,15 +191,21 @@ $customer_status_options = [
                                     </button>
                                     <div x-show="open" 
                                          x-transition
-                                         class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-10 border">
-                                        <form method="POST" action="" class="p-2">
+                                         class="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg z-10 border">
+                                        <form method="POST" action="" class="p-3">
                                             <input type="hidden" name="request_id" value="<?php echo $request['id']; ?>">
-                                            <select name="status" class="w-full px-3 py-2 border rounded-md text-sm mb-2">
-                                                <option value="">Update Status</option>
-                                                <option value="cancelled">Cancel Request</option>
+                                            <label class="block text-sm font-medium text-gray-700 mb-2">Update Status</label>
+                                            <select name="status" class="w-full px-3 py-2 border rounded-md text-sm mb-3">
+                                                <option value="">Select action...</option>
+                                                <?php if ($request['status'] == 'pending' || $request['status'] == 'accepted'): ?>
+                                                    <option value="cancelled">❌ Cancel Request</option>
+                                                <?php endif; ?>
+                                                <?php if ($request['status'] == 'completed'): ?>
+                                                    <option value="success">✅ Mark as Success</option>
+                                                <?php endif; ?>
                                             </select>
                                             <button type="submit" name="update_status" 
-                                                    class="w-full bg-red-600 text-white px-3 py-2 rounded-md text-sm hover:bg-red-700">
+                                                    class="w-full bg-blue-600 text-white px-3 py-2 rounded-md text-sm hover:bg-blue-700">
                                                 Apply Update
                                             </button>
                                         </form>
@@ -198,9 +239,9 @@ $customer_status_options = [
                         <?php endif; ?>
                     </div>
                     
-                    <!-- Cancel Button for Pending/Accepted Requests (Alternative Style) -->
-                    <?php if (in_array($request['status'], ['pending', 'accepted'])): ?>
-                        <div class="border-t pt-4 flex justify-end">
+                    <!-- Action Buttons for Status Updates -->
+                    <div class="border-t pt-4 flex flex-wrap gap-3 justify-end">
+                        <?php if (in_array($request['status'], ['pending', 'accepted'])): ?>
                             <form method="POST" action="" onsubmit="return confirm('Are you sure you want to cancel this service request?');">
                                 <input type="hidden" name="request_id" value="<?php echo $request['id']; ?>">
                                 <input type="hidden" name="status" value="cancelled">
@@ -209,19 +250,64 @@ $customer_status_options = [
                                     <i class="fas fa-times mr-2"></i> Cancel Request
                                 </button>
                             </form>
-                        </div>
-                    <?php endif; ?>
+                        <?php endif; ?>
+                        
+                        <?php if ($request['status'] == 'completed'): ?>
+                            <form method="POST" action="" onsubmit="return confirm('Has this service been completed successfully?');">
+                                <input type="hidden" name="request_id" value="<?php echo $request['id']; ?>">
+                                <input type="hidden" name="status" value="success">
+                                <button type="submit" name="update_status" 
+                                        class="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors">
+                                    <i class="fas fa-trophy mr-2"></i> Mark as Success
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                        
+                        <?php if ($request['status'] == 'success'): ?>
+                            <div class="px-4 py-2 bg-emerald-100 text-emerald-700 rounded-lg">
+                                <i class="fas fa-star mr-2"></i> Service Completed Successfully!
+                            </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($request['status'] == 'cancelled'): ?>
+                            <div class="px-4 py-2 bg-red-100 text-red-700 rounded-lg">
+                                <i class="fas fa-info-circle mr-2"></i> This request has been cancelled
+                            </div>
+                        <?php endif; ?>
+                    </div>
                     
-                    <div class="border-t pt-4 <?php echo in_array($request['status'], ['pending', 'accepted']) ? 'mt-4' : ''; ?>">
+                    <div class="border-t pt-4 mt-4">
                         <p class="text-sm text-gray-500">
+                            <i class="far fa-calendar-alt mr-1"></i>
                             Requested on: <?php echo date('F j, Y g:i A', strtotime($request['created_at'])); ?>
                         </p>
                         <?php if ($request['updated_at'] && $request['updated_at'] != $request['created_at']): ?>
                             <p class="text-sm text-gray-500 mt-1">
+                                <i class="fas fa-sync-alt mr-1"></i>
                                 Last updated: <?php echo date('F j, Y g:i A', strtotime($request['updated_at'])); ?>
                             </p>
                         <?php endif; ?>
                     </div>
+                    
+                    <!-- Rating Section for Success Status -->
+                    <?php if ($request['status'] == 'success'): ?>
+                        <div class="mt-4 pt-4 border-t border-emerald-200 bg-emerald-50 p-4 rounded-lg">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-sm font-semibold text-emerald-800">
+                                        <i class="fas fa-smile-wink mr-1"></i> Thank you for your feedback!
+                                    </p>
+                                    <p class="text-xs text-emerald-600 mt-1">
+                                        Your service request has been marked as successful.
+                                    </p>
+                                </div>
+                                <a href="write_review.php?request_id=<?php echo $request['id']; ?>" 
+                                   class="text-emerald-700 hover:text-emerald-900">
+                                    <i class="fas fa-star mr-1"></i> Write a Review
+                                </a>
+                            </div>
+                        </div>
+                    <?php endif; ?>
                 </div>
             <?php endforeach; ?>
         </div>
